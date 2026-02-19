@@ -1,67 +1,46 @@
 import streamlit as st
 import os
-import uuid
 import json
+import uuid
+import shutil
 
-# المجلدات الأساسية
-PROJECTS_DIR = "all_user_projects"
-os.makedirs(PROJECTS_DIR, exist_ok=True)
+# إعدادات المخزن
+PROJECTS_BASE = "factory_output"
+os.makedirs(PROJECTS_BASE, exist_ok=True)
 
-st.title("🏭 مصنع الأندرويد: المحرك الحقيقي")
-
-with st.form("pro_factory"):
-    u_name = st.text_input("اسم المستخدم", "monsef")
-    package_id = st.text_input("اسم الحزمة", "com.factory.app")
-    proj_name = st.text_input("اسم المشروع", "AndroidPythonApp")
+# ---------------------------------------------------------
+# المرحلة 2: الكود المولد للمشروع (The Generator Engine)
+# ---------------------------------------------------------
+def generate_android_files(root_path, config):
+    package_path = config['package'].replace(".", "/")
+    # إنشاء المسارات
+    os.makedirs(f"{root_path}/app/src/main/java/{package_path}", exist_ok=True)
+    os.makedirs(f"{root_path}/app/src/main/python", exist_ok=True)
     
-    st.write("🛡️ الأذونات (تضاف تلقائياً للـ Manifest):")
-    perms = st.multiselect("اختار الأذونات", ["INTERNET", "CAMERA", "STORAGE", "RECORD_AUDIO"])
-    
-    st.write("📦 المكتبات (Requirements):")
-    libs = st.text_input("اكتب المكتبات لي باغي (مثال: requests, flet, pandas)", "flet")
-    
-    py_code = st.text_area("🐍 كود بايثون الرئيسي (main.py):", height=250)
-    
-    submit = st.form_submit_button("🏗️ توليد مشروع أندرويد كامل")
-
-if submit:
-    build_id = str(uuid.uuid4())[:8]
-    root = f"{PROJECTS_DIR}/{u_name}_{build_id}"
-    
-    # 1. إنشاء هيكل المجلدات (Standard Android Structure)
-    pkg_path = package_id.replace(".", "/")
-    os.makedirs(f"{root}/app/src/main/java/{pkg_path}", exist_ok=True)
-    os.makedirs(f"{root}/app/src/main/python", exist_ok=True)
-    os.makedirs(f"{root}/app/src/main/res/drawable", exist_ok=True)
-
-    # 2. توليد MainActivity.kt (الكود اللي كيشغل بايثون)
-    # هاد الكود هو "المحرك" اللي كيعيط على محرك Chaquopy
-    kotlin_engine = f"""package {package_id}
-import android.os.Bundle
-import androidx.appcompat.app.AppCompatActivity
+    # 1. ملف MainActivity.kt (محرك التشغيل)
+    kt_code = f"""package {config['package']}
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {{
     override fun onCreate(savedInstanceState: Bundle?) {{
         super.onCreate(savedInstanceState: Bundle?)
-        if (!Python.isStarted()) {{
-            Python.start(AndroidPlatform(this))
-        }}
+        if (!Python.isStarted()) {{ Python.start(AndroidPlatform(this)) }}
         val py = Python.getInstance()
-        val module = py.getModule("main") // هنا كيعيط على main.py ديال المستخدم
-        module.callAttr("main_func") 
+        py.getModule("main").callAttr("start")
     }}
 }}"""
-    with open(f"{root}/app/src/main/java/{pkg_path}/MainActivity.kt", "w") as f:
-        f.write(kotlin_engine)
+    with open(f"{root_path}/app/src/main/java/{package_path}/MainActivity.kt", "w") as f:
+        f.write(kt_code)
 
-    # 3. توليد ملف AndroidManifest.xml
-    xml_perms = "\n".join([f'<uses-permission android:name="android.permission.{p}" />' for p in perms])
+    # 2. ملف AndroidManifest.xml (الأذونات والهوية)
+    perms_xml = "\n".join([f'<uses-permission android:name="android.permission.{p}" />' for p in config['permissions']])
     manifest = f"""<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{package_id}">
-    {xml_perms}
-    <application android:label="{proj_name}" android:icon="@drawable/icon">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{config['package']}">
+    {perms_xml}
+    <application android:label="{config['app_name']}">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -70,33 +49,68 @@ class MainActivity : AppCompatActivity() {{
         </activity>
     </application>
 </manifest>"""
-    with open(f"{root}/app/src/main/AndroidManifest.xml", "w") as f:
+    with open(f"{root_path}/app/src/main/AndroidManifest.xml", "w") as f:
         f.write(manifest)
 
-    # 4. توليد ملف بناء Gradle (build.gradle) مع تحميل المكتبات تلقائياً
-    gradle = f"""
-plugins {{
-    id 'com.android.application'
-    id 'com.chaquo.python' // مكتبة تشغيل بايثون
-}}
-android {{
-    defaultConfig {{
-        applicationId "{package_id}"
-        python {{
-            pip {{
-                install "{libs.replace(',', '"\ninstall "')}" // كيحمل المكتبات لي طلبتي
-            }}
-        }}
-    }}
-}}"""
-    with open(f"{root}/app/build.gradle", "w") as f:
-        f.write(gradle)
-
-    # 5. وضع كود بايثون المستخدم في المكان الصحيح
-    # كنغلفو الكود في دالة main_func باش كوتلن يعيط عليها
-    final_py = f"def main_func():\n" + "\n".join(["    " + line for line in py_code.split("\n")])
-    with open(f"{root}/app/src/main/python/main.py", "w") as f:
+    # 3. ملف Python Code (main.py)
+    # كنغلفو الكود فدالة start باش كوتلن يعيط عليها
+    final_py = f"def start():\n" + "\n".join(["    " + line for line in config['py_code'].split("\n")])
+    with open(f"{root_path}/app/src/main/python/main.py", "w") as f:
         f.write(final_py)
 
-    st.success(f"✅ تم إنشاء 'الوحش' بنجاح في مجلد: {root}")
-    st.json({"status": "ready", "path": root, "api_endpoint": f"/get_project/{build_id}"})
+# ---------------------------------------------------------
+# المرحلة 3: المغلف (The Packager & Meta Handler)
+# ---------------------------------------------------------
+def package_user_project(u_name, u_id, config):
+    build_id = str(uuid.uuid4())[:8]
+    folder_name = f"{u_name}_{u_id}_{build_id}"
+    full_path = os.path.join(PROJECTS_BASE, folder_name)
+    os.makedirs(full_path, exist_ok=True)
+    
+    # حفظ معلومات المستخدم (User Meta)
+    meta_data = {"user_name": u_name, "user_id": u_id, "build_id": build_id, "config": config}
+    with open(f"{full_path}/user_meta.json", "w") as f:
+        json.dump(meta_data, f, indent=4)
+    
+    # توليد ملفات الأندرويد داخل المجلد
+    generate_android_files(full_path, config)
+    
+    return folder_name
+
+# ---------------------------------------------------------
+# المرحلة 1: واجهة المستخدم (The UI / Input Stage)
+# ---------------------------------------------------------
+st.title("🏭 مصنع الأندرويد الذكي")
+
+with st.sidebar:
+    st.header("👤 معلومات المستخدم")
+    u_name = st.text_input("إسم المستخدم", "Monsef")
+    u_id = st.text_input("معرف المستخدم (ID)", "7788")
+
+st.header("🛠️ إعدادات التطبيق")
+col1, col2 = st.columns(2)
+with col1:
+    app_name = st.text_input("اسم التطبيق", "MyApp")
+    package_id = st.text_input("اسم الحزمة", "com.factory.app")
+with col2:
+    perms = st.multiselect("الأذونات", ["INTERNET", "CAMERA", "STORAGE", "LOCATION"])
+
+py_code = st.text_area("🐍 كود بايثون الرئيسي", "print('App Started!')", height=200)
+
+if st.button("🚀 تشغيل المصنع وبناء المشروع"):
+    config = {
+        "app_name": app_name,
+        "package": package_id,
+        "permissions": perms,
+        "py_code": py_code
+    }
+    
+    # نداء المرحلة 3 (اللي هي بدورها كتعيط للمرحلة 2)
+    final_folder = package_user_project(u_name, u_id, config)
+    
+    st.success(f"✅ تم البناء بنجاح!")
+    st.info(f"المجلد النهائي: {final_folder}")
+    
+    # عرض محتوى المجلد (API Simulation)
+    st.write("📂 محتويات المجلد الجاهز للجلب:")
+    st.json(os.listdir(os.path.join(PROJECTS_BASE, final_folder)))
